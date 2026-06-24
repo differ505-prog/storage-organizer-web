@@ -7,32 +7,21 @@ import {
   useState,
 } from 'react'
 import './App.css'
-
-type ItemStatus = 'active' | 'staging'
-
-type InventoryItem = {
-  id: string
-  name: string
-  area: string
-  location: string
-  parentLabel: string
-  childLabel: string
-  reason: string
-  aliases: string[]
-  tags: string[]
-  searchText: string
-  status?: ItemStatus
-  stagingNote?: string
-  llmSuggestion?: string
-  createdAt?: string
-  updatedAt?: string
-}
-
-type EnrichedItem = InventoryItem & {
-  status: ItemStatus
-  path: string
-  normalizedSearchText: string
-}
+import seedInventory from './data/inventory.json'
+import {
+  buildReviewPrompt,
+  normalizeForSearch,
+  normalizeInventoryItem,
+  toEnrichedItem,
+  toStorageItemRow,
+  type EnrichedItem,
+  type InventoryItem,
+  type ItemStatus,
+  type ReviewPromptResponse,
+  type StorageItemRow,
+  fromStorageItemRow,
+} from './lib/inventory'
+import { isSupabaseConfigured, sharedPassword, supabase } from './lib/supabase'
 
 type Stat = {
   label: string
@@ -54,26 +43,11 @@ type InventoryDraft = {
   llmSuggestion: string
 }
 
-type ItemsResponse = {
-  items: InventoryItem[]
-  updatedAt: string
-}
-
-type ReviewPromptResponse = {
-  prompt: string
-  summary: {
-    activeCount: number
-    stagingCount: number
-    areas: number
-    locations: number
-  }
-}
-
 type EditorMode = 'create' | 'edit' | null
 
 const sourceUrl = 'https://gemini.google.com/share/9ed1050e454e'
-const passwordHint = '0505'
-const tokenStorageKey = 'storage-organizer-token'
+const passwordHint = sharedPassword
+const tokenStorageKey = 'storage-organizer-editor'
 
 const suggestionKeywords = ['驗電筆', 'WAGO', '螺絲', '鉸鏈', 'RJ45', '止洩帶', '電池', '延長線']
 
@@ -108,20 +82,18 @@ const emptyDraft = (status: ItemStatus = 'active'): InventoryDraft => ({
   llmSuggestion: '',
 })
 
-function normalize(value: string) {
-  return value.toLowerCase().normalize('NFKC').replace(/\s+/g, ' ').trim()
-}
+const fallbackSeedItems = (seedInventory as InventoryItem[]).map((item) => normalizeInventoryItem(item))
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function buildSearchVariants(token: string) {
-  const normalizedToken = normalize(token)
+  const normalizedToken = normalizeForSearch(token)
   const variants = new Set([normalizedToken])
 
   for (const group of synonymGroups) {
-    const normalizedGroup = group.map(normalize)
+    const normalizedGroup = group.map(normalizeForSearch)
     if (normalizedGroup.includes(normalizedToken)) {
       normalizedGroup.forEach((variant) => variants.add(variant))
     }
@@ -148,7 +120,7 @@ function highlightText(text: string, query: string) {
   const parts = text.split(matcher)
 
   return parts.map((part, index) => {
-    const isMatch = tokens.some((token) => normalize(token) === normalize(part))
+    const isMatch = tokens.some((token) => normalizeForSearch(token) === normalizeForSearch(part))
 
     if (!isMatch) {
       return <Fragment key={`${part}-${index}`}>{part}</Fragment>
@@ -156,40 +128,6 @@ function highlightText(text: string, query: string) {
 
     return <mark key={`${part}-${index}`}>{part}</mark>
   })
-}
-
-function buildPath(item: InventoryItem) {
-  const status = item.status ?? 'active'
-  const segments = [item.area, item.location, item.parentLabel, item.childLabel].filter(Boolean)
-
-  if (status === 'staging') {
-    if (segments.length === 0) {
-      return '暫存區 > 待 LLM 建議'
-    }
-
-    return `暫存區候選 > ${segments.join(' > ')}`
-  }
-
-  return segments.join(' > ')
-}
-
-function toEnrichedItem(item: InventoryItem): EnrichedItem {
-  return {
-    ...item,
-    status: item.status ?? 'active',
-    path: buildPath(item),
-    normalizedSearchText: normalize(
-      [
-        item.searchText,
-        item.stagingNote,
-        item.llmSuggestion,
-        item.status ?? 'active',
-        buildPath(item),
-      ]
-        .filter(Boolean)
-        .join(' '),
-    ),
-  }
 }
 
 function parseDelimitedText(value: string) {
@@ -241,6 +179,7 @@ function App() {
   const [editorMode, setEditorMode] = useState<EditorMode>(null)
   const [draft, setDraft] = useState<InventoryDraft>(emptyDraft())
   const [promptSummary, setPromptSummary] = useState<ReviewPromptResponse['summary'] | null>(null)
+  const [hasLoadedCloudData, setHasLoadedCloudData] = useState(false)
 
   const inventory = useMemo(() => items.map(toEnrichedItem), [items])
   const activeItems = useMemo(() => inventory.filter((item) => item.status === 'active'), [inventory])
@@ -296,11 +235,6 @@ function App() {
     return uniqueValues([draft.childLabel, ...candidates.map((item) => item.childLabel)])
   }, [activeItems, draft.area, draft.location, draft.parentLabel, draft.childLabel])
 
-  const applyItemsResponse = useCallback((payload: ItemsResponse) => {
-    setItems(payload.items)
-    setLastUpdated(payload.updatedAt)
-  }, [])
-
   const loadItems = useCallback(
     async (showLoader: boolean) => {
       if (showLoader) {
@@ -308,14 +242,34 @@ function App() {
       }
 
       try {
-        const response = await fetch('/api/items')
-        const payload = (await response.json()) as ItemsResponse
-
-        if (!response.ok) {
-          throw new Error('載入資料失敗。')
+        if (!supabase) {
+          setItems(fallbackSeedItems)
+          const fallbackUpdatedAt = [...fallbackSeedItems]
+            .map((item) => item.updatedAt || item.createdAt || '')
+            .sort()
+            .at(-1)
+          setLastUpdated(fallbackUpdatedAt || '')
+          return
         }
 
-        applyItemsResponse(payload)
+        const { data, error } = await supabase
+          .from('storage_items')
+          .select('*')
+          .order('updated_at', { ascending: false })
+
+        if (error) {
+          throw error
+        }
+
+        const nextItems = ((data ?? []) as StorageItemRow[]).map((row) => fromStorageItemRow(row))
+        const latestUpdatedAt = [...nextItems]
+          .map((item) => item.updatedAt || item.createdAt || '')
+          .sort()
+          .at(-1)
+
+        setItems(nextItems)
+        setLastUpdated(latestUpdatedAt || '')
+        setHasLoadedCloudData(true)
       } catch (error) {
         setStatusMessage(error instanceof Error ? error.message : '載入資料失敗。')
       } finally {
@@ -324,7 +278,7 @@ function App() {
         }
       }
     },
-    [applyItemsResponse],
+    [],
   )
 
   useEffect(() => {
@@ -336,36 +290,16 @@ function App() {
   }, [loadItems])
 
   useEffect(() => {
+    if (!supabase) {
+      return
+    }
+
     const intervalId = window.setInterval(() => {
       void loadItems(false)
     }, 15000)
 
     return () => window.clearInterval(intervalId)
   }, [loadItems])
-
-  useEffect(() => {
-    if (!authToken) {
-      return
-    }
-
-    void (async () => {
-      try {
-        const response = await fetch('/api/session', {
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-          },
-        })
-
-        if (!response.ok) {
-          throw new Error('登入已失效，請重新輸入密碼。')
-        }
-      } catch (error) {
-        setAuthToken(null)
-        window.localStorage.removeItem(tokenStorageKey)
-        setAuthError(error instanceof Error ? error.message : '登入已失效。')
-      }
-    })()
-  }, [authToken])
 
   const areas = useMemo(
     () => ['全部區域', ...new Set(activeItems.map((item) => item.area))],
@@ -552,21 +486,16 @@ function App() {
     setAuthError('')
 
     try {
-      const response = await fetch('/api/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ password }),
-      })
-      const payload = (await response.json()) as { token?: string; message?: string }
-
-      if (!response.ok || !payload.token) {
-        throw new Error(payload.message || '登入失敗。')
+      if (!supabase) {
+        throw new Error('尚未連接 Supabase，請先完成雲端設定。')
       }
 
-      setAuthToken(payload.token)
-      window.localStorage.setItem(tokenStorageKey, payload.token)
+      if (password !== passwordHint) {
+        throw new Error('密碼錯誤。')
+      }
+
+      setAuthToken('granted')
+      window.localStorage.setItem(tokenStorageKey, 'granted')
       setPassword('')
       setStatusMessage('已解鎖共同編輯模式。')
     } catch (error) {
@@ -609,7 +538,13 @@ function App() {
     setStatusMessage('')
 
     try {
+      if (!supabase) {
+        throw new Error('尚未連接 Supabase，請先完成雲端設定。')
+      }
+
+      const existingItem = draft.id ? items.find((item) => item.id === draft.id) : undefined
       const payload = {
+        id: existingItem?.id ?? draft.id,
         name: draft.name,
         area: draft.area,
         location: draft.location,
@@ -621,22 +556,17 @@ function App() {
         status: statusOverride ?? draft.status,
         stagingNote: draft.stagingNote,
         llmSuggestion: draft.llmSuggestion,
+        createdAt: existingItem?.createdAt,
       }
+      const row = toStorageItemRow(normalizeInventoryItem(payload))
 
-      const endpoint = editorMode === 'edit' && draft.id ? `/api/items/${draft.id}` : '/api/items'
-      const method = editorMode === 'edit' && draft.id ? 'PUT' : 'POST'
-      const response = await fetch(endpoint, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(payload),
-      })
-      const maybeJson = response.status === 204 ? null : ((await response.json()) as { message?: string })
+      const { error } =
+        editorMode === 'edit' && draft.id
+          ? await supabase.from('storage_items').upsert(row, { onConflict: 'id' })
+          : await supabase.from('storage_items').insert(row)
 
-      if (!response.ok) {
-        throw new Error(maybeJson?.message || '儲存失敗。')
+      if (error) {
+        throw error
       }
 
       await loadItems(false)
@@ -664,16 +594,14 @@ function App() {
     setIsSaving(true)
 
     try {
-      const response = await fetch(`/api/items/${item.id}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      })
+      if (!supabase) {
+        throw new Error('尚未連接 Supabase，請先完成雲端設定。')
+      }
 
-      if (!response.ok) {
-        const payload = (await response.json()) as { message?: string }
-        throw new Error(payload.message || '刪除失敗。')
+      const { error } = await supabase.from('storage_items').delete().eq('id', item.id)
+
+      if (error) {
+        throw error
       }
 
       await loadItems(false)
@@ -690,13 +618,7 @@ function App() {
 
   const copyReviewPrompt = async () => {
     try {
-      const response = await fetch('/api/export/review-prompt')
-      const payload = (await response.json()) as ReviewPromptResponse & { message?: string }
-
-      if (!response.ok) {
-        throw new Error(payload.message || '無法產生覆核提示詞。')
-      }
-
+      const payload = buildReviewPrompt(items)
       await copyToClipboard(payload.prompt)
       setPromptSummary(payload.summary)
       setStatusMessage('已複製 LLM 覆核提示詞，可直接貼給高階模型。')
@@ -737,21 +659,21 @@ function App() {
     setIsSaving(true)
 
     try {
-      const response = await fetch(`/api/items/${item.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
+      if (!supabase) {
+        throw new Error('尚未連接 Supabase，請先完成雲端設定。')
+      }
+
+      const row = toStorageItemRow(
+        normalizeInventoryItem({
           ...item,
           status: 'active',
         }),
-      })
-      const payload = (await response.json()) as { message?: string }
+      )
 
-      if (!response.ok) {
-        throw new Error(payload.message || '歸檔失敗。')
+      const { error } = await supabase.from('storage_items').upsert(row, { onConflict: 'id' })
+
+      if (error) {
+        throw error
       }
 
       await loadItems(false)
@@ -765,6 +687,12 @@ function App() {
 
   const hasEditor = editorMode !== null
   const isLoggedIn = Boolean(authToken)
+  const isReadOnly = !isSupabaseConfigured
+  const syncStatusText = isReadOnly
+    ? '尚未連接雲端資料庫，目前顯示唯讀種子資料。'
+    : hasLoadedCloudData
+      ? '已連接 Supabase 共享資料。'
+      : '正在連接 Supabase 共享資料。'
 
   return (
     <main className="app-shell">
@@ -788,7 +716,7 @@ function App() {
           <h2>重點</h2>
           <ul>
             <li>位置改為選單式編輯，避免打錯字。</li>
-            <li>{isLoggedIn ? '已解鎖編輯模式。' : `登入密碼：${passwordHint}`}</li>
+            <li>{isReadOnly ? '目前為唯讀展示模式。' : isLoggedIn ? '已解鎖編輯模式。' : `登入密碼：${passwordHint}`}</li>
             <li>{lastUpdated ? `最近同步：${new Date(lastUpdated).toLocaleString()}` : '尚未取得同步時間。'}</li>
           </ul>
         </div>
@@ -862,12 +790,17 @@ function App() {
           <div className="panel">
             <div className="panel-heading">
               <h2>共同編輯</h2>
-              <span>{isLoggedIn ? '已登入' : '鎖定中'}</span>
+              <span>{isReadOnly ? '唯讀' : isLoggedIn ? '已登入' : '鎖定中'}</span>
             </div>
 
-            {isLoggedIn ? (
+            {isReadOnly ? (
               <div className="auth-card">
-                <p>已連接共享資料。</p>
+                <p>{syncStatusText}</p>
+                <p className="subtle-text">完成 Supabase 設定後，這裡就會開放共同編輯與跨裝置同步。</p>
+              </div>
+            ) : isLoggedIn ? (
+              <div className="auth-card">
+                <p>{syncStatusText}</p>
                 <div className="stack-buttons">
                   <button type="button" onClick={() => startCreate('active')}>
                     新增正式物品
@@ -900,7 +833,7 @@ function App() {
                 <button type="submit" className="primary-link button-fill">
                   進入編輯模式
                 </button>
-                <p className="subtle-text">目前設定密碼：`{passwordHint}`</p>
+                <p className="subtle-text">{syncStatusText}</p>
                 {authError ? <p className="error-text">{authError}</p> : null}
               </form>
             )}
@@ -926,7 +859,7 @@ function App() {
             </div>
           </div>
 
-          {hasEditor ? (
+          {hasEditor && !isReadOnly ? (
             <div className="panel editor-panel">
               <div className="panel-heading">
                 <h2>{editorMode === 'edit' ? '編輯物品' : '新增物品'}</h2>
