@@ -171,6 +171,7 @@ function App() {
   const [selectedArea, setSelectedArea] = useState('全部區域')
   const [selectedLocation, setSelectedLocation] = useState('全部位置')
   const [selectedParent, setSelectedParent] = useState('全部大類')
+  const [selectedChild, setSelectedChild] = useState('全部子類')
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [authToken, setAuthToken] = useState<string | null>(null)
   const [password, setPassword] = useState('')
@@ -306,14 +307,61 @@ function App() {
     [activeItems],
   )
 
+  const locationCandidates = useMemo(() => {
+    return activeItems.filter((item) => {
+      if (selectedArea !== '全部區域' && item.area !== selectedArea) {
+        return false
+      }
+
+      return true
+    })
+  }, [activeItems, selectedArea])
+
   const locations = useMemo(
-    () => ['全部位置', ...new Set(activeItems.map((item) => item.location))],
-    [activeItems],
+    () => ['全部位置', ...new Set(locationCandidates.map((item) => item.location))],
+    [locationCandidates],
   )
 
+  const parentCandidates = useMemo(() => {
+    return activeItems.filter((item) => {
+      if (selectedArea !== '全部區域' && item.area !== selectedArea) {
+        return false
+      }
+
+      if (selectedLocation !== '全部位置' && item.location !== selectedLocation) {
+        return false
+      }
+
+      return true
+    })
+  }, [activeItems, selectedArea, selectedLocation])
+
   const parentLabels = useMemo(
-    () => ['全部大類', ...new Set(activeItems.map((item) => item.parentLabel))],
-    [activeItems],
+    () => ['全部大類', ...new Set(parentCandidates.map((item) => item.parentLabel))],
+    [parentCandidates],
+  )
+
+  const childCandidates = useMemo(() => {
+    return activeItems.filter((item) => {
+      if (selectedArea !== '全部區域' && item.area !== selectedArea) {
+        return false
+      }
+
+      if (selectedLocation !== '全部位置' && item.location !== selectedLocation) {
+        return false
+      }
+
+      if (selectedParent !== '全部大類' && item.parentLabel !== selectedParent) {
+        return false
+      }
+
+      return true
+    })
+  }, [activeItems, selectedArea, selectedLocation, selectedParent])
+
+  const childLabels = useMemo(
+    () => ['全部子類', ...new Set(childCandidates.map((item) => item.childLabel))],
+    [childCandidates],
   )
 
   const filteredItems = useMemo(() => {
@@ -336,6 +384,10 @@ function App() {
         return false
       }
 
+      if (selectedChild !== '全部子類' && item.childLabel !== selectedChild) {
+        return false
+      }
+
       if (searchGroups.length === 0) {
         return true
       }
@@ -344,7 +396,7 @@ function App() {
         variants.some((variant: string) => item.normalizedSearchText.includes(variant)),
       )
     })
-  }, [activeItems, query, selectedArea, selectedLocation, selectedParent])
+  }, [activeItems, query, selectedArea, selectedLocation, selectedParent, selectedChild])
 
   const filteredStagingItems = useMemo(() => {
     const searchGroups = query
@@ -404,14 +456,24 @@ function App() {
 
   const handleAreaChange = (event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedArea(event.target.value)
+    setSelectedLocation('全部位置')
+    setSelectedParent('全部大類')
+    setSelectedChild('全部子類')
   }
 
   const handleLocationChange = (event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedLocation(event.target.value)
+    setSelectedParent('全部大類')
+    setSelectedChild('全部子類')
   }
 
   const handleParentChange = (event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedParent(event.target.value)
+    setSelectedChild('全部子類')
+  }
+
+  const handleChildChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    setSelectedChild(event.target.value)
   }
 
   const clearFilters = () => {
@@ -419,6 +481,7 @@ function App() {
     setSelectedArea('全部區域')
     setSelectedLocation('全部位置')
     setSelectedParent('全部大類')
+    setSelectedChild('全部子類')
   }
 
   const handlePasswordChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -732,6 +795,8 @@ function App() {
           />
         </label>
 
+        <p className="filter-hint">篩選器會依區域、位置、大類、子類逐步收斂，切換上層時下層會自動重置。</p>
+
         <div className="filter-grid">
           <label>
             <span>區域</span>
@@ -761,6 +826,17 @@ function App() {
               {parentLabels.map((parentLabel: string) => (
                 <option key={parentLabel} value={parentLabel}>
                   {parentLabel}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>子類</span>
+            <select value={selectedChild} onChange={handleChildChange}>
+              {childLabels.map((childLabel: string) => (
+                <option key={childLabel} value={childLabel}>
+                  {childLabel}
                 </option>
               ))}
             </select>
@@ -992,7 +1068,12 @@ function App() {
                   key={area}
                   type="button"
                   className={area === selectedArea ? 'active' : ''}
-                  onClick={() => setSelectedArea(area)}
+                  onClick={() => {
+                    setSelectedArea(area)
+                    setSelectedLocation('全部位置')
+                    setSelectedParent('全部大類')
+                    setSelectedChild('全部子類')
+                  }}
                 >
                   <span>{area}</span>
                   <strong>{count}</strong>
@@ -1067,14 +1148,49 @@ function App() {
                     </p>
 
                     <div className="result-actions">
-                      <button type="button" onClick={() => setSelectedArea(item.area)}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedArea(item.area)
+                          setSelectedLocation('全部位置')
+                          setSelectedParent('全部大類')
+                          setSelectedChild('全部子類')
+                        }}
+                      >
                         只看此區域
                       </button>
-                      <button type="button" onClick={() => setSelectedLocation(item.location)}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedArea(item.area)
+                          setSelectedLocation(item.location)
+                          setSelectedParent('全部大類')
+                          setSelectedChild('全部子類')
+                        }}
+                      >
                         只看此位置
                       </button>
-                      <button type="button" onClick={() => setSelectedParent(item.parentLabel)}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedArea(item.area)
+                          setSelectedLocation(item.location)
+                          setSelectedParent(item.parentLabel)
+                          setSelectedChild('全部子類')
+                        }}
+                      >
                         只看此大類
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedArea(item.area)
+                          setSelectedLocation(item.location)
+                          setSelectedParent(item.parentLabel)
+                          setSelectedChild(item.childLabel)
+                        }}
+                      >
+                        只看此子類
                       </button>
                     </div>
                   </article>

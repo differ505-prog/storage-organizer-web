@@ -134,6 +134,12 @@
   padding: 18px;
 }
 
+.filter-hint {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .search-box,
 .filter-grid label {
   display: flex;
@@ -165,7 +171,7 @@
 
 .filter-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
