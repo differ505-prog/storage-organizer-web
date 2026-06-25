@@ -73,6 +73,7 @@ function buildTags(item: InventoryItem) {
     ...new Set(
       [
         (item.status ?? 'active') === 'staging' ? '暫存區' : item.area.replace('家裡-', ''),
+        item.location,
         item.parentLabel,
         item.childLabel,
       ].filter(Boolean),
