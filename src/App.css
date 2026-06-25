@@ -156,6 +156,7 @@
 
 .search-box input,
 .filter-grid select,
+.quick-move-grid select,
 .editor-grid input,
 .editor-grid select,
 .editor-grid textarea {
@@ -443,6 +444,63 @@
   margin-top: 16px;
 }
 
+.quick-move-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.quick-move-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.quick-move-heading strong {
+  font-size: 0.95rem;
+}
+
+.quick-move-heading span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.quick-move-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quick-move-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quick-move-grid span {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.quick-move-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.quick-move-actions button {
+  padding: 9px 12px;
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
 mark {
   padding: 0 0.18em;
   border-radius: 4px;
@@ -458,6 +516,7 @@ mark {
   .hero-section,
   .content-grid,
   .filter-grid,
+  .quick-move-grid,
   .stats-grid,
   .editor-grid {
     grid-template-columns: 1fr;
@@ -490,7 +549,9 @@ mark {
 
   .hero-actions,
   .result-actions,
-  .card-actions {
+  .card-actions,
+  .quick-move-actions,
+  .quick-move-heading {
     flex-direction: column;
   }
 
@@ -499,6 +560,7 @@ mark {
   .button-fill,
   .copy-button,
   .result-actions button,
+  .quick-move-actions button,
   .ghost-inline,
   .danger-inline {
     width: 100%;

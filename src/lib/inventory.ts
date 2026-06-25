@@ -68,7 +68,7 @@ function sanitizeList(value: unknown) {
   return [...new Set(value.map((entry) => normalizeText(entry)).filter(Boolean))]
 }
 
-function buildTags(item: InventoryItem) {
+export function buildPlacementTags(item: Pick<InventoryItem, 'area' | 'location' | 'parentLabel' | 'childLabel' | 'status'>) {
   return [
     ...new Set(
       [
@@ -157,7 +157,7 @@ export function normalizeInventoryItem(input: Partial<InventoryItem>): Inventory
     searchText: '',
   }
 
-  item.tags = item.tags.length > 0 ? item.tags : buildTags(item)
+  item.tags = item.tags.length > 0 ? item.tags : buildPlacementTags(item)
   item.searchText = normalizeText(input.searchText) || createSearchText(item)
   return item
 }

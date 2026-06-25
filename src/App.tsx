@@ -9,6 +9,7 @@ import {
 import './App.css'
 import seedInventory from './data/inventory.json'
 import {
+  buildPlacementTags,
   buildReviewPrompt,
   normalizeForSearch,
   normalizeInventoryItem,
@@ -41,6 +42,13 @@ type InventoryDraft = {
   status: ItemStatus
   stagingNote: string
   llmSuggestion: string
+}
+
+type PlacementDraft = {
+  area: string
+  location: string
+  parentLabel: string
+  childLabel: string
 }
 
 type EditorMode = 'create' | 'edit' | null
@@ -141,6 +149,35 @@ function uniqueValues(values: string[]) {
   return [...new Set(values.filter(Boolean))]
 }
 
+function emptyPlacementDraft(): PlacementDraft {
+  return {
+    area: '',
+    location: '',
+    parentLabel: '',
+    childLabel: '',
+  }
+}
+
+function toPlacementDraft(item: Pick<EnrichedItem, 'area' | 'location' | 'parentLabel' | 'childLabel'>): PlacementDraft {
+  return {
+    area: item.area,
+    location: item.location,
+    parentLabel: item.parentLabel,
+    childLabel: item.childLabel,
+  }
+}
+
+function hasCompletePlacement(placement: PlacementDraft) {
+  return Boolean(placement.area && placement.location && placement.parentLabel && placement.childLabel)
+}
+
+function mergePlacementTags(existingItem: InventoryItem | undefined, nextItem: InventoryItem) {
+  const existingPlacementTags = new Set(existingItem ? buildPlacementTags(existingItem) : [])
+  const customTags = existingItem?.tags.filter((tag) => !existingPlacementTags.has(tag)) ?? []
+
+  return uniqueValues([...customTags, ...buildPlacementTags(nextItem)])
+}
+
 function toDraft(item: EnrichedItem): InventoryDraft {
   return {
     id: item.id,
@@ -181,6 +218,8 @@ function App() {
   const [draft, setDraft] = useState<InventoryDraft>(emptyDraft())
   const [promptSummary, setPromptSummary] = useState<ReviewPromptResponse['summary'] | null>(null)
   const [hasLoadedCloudData, setHasLoadedCloudData] = useState(false)
+  const [quickMoveItemId, setQuickMoveItemId] = useState<string | null>(null)
+  const [quickMoveDraft, setQuickMoveDraft] = useState<PlacementDraft>(emptyPlacementDraft())
 
   const inventory = useMemo(() => items.map(toEnrichedItem), [items])
   const activeItems = useMemo(() => inventory.filter((item) => item.status === 'active'), [inventory])
@@ -235,6 +274,56 @@ function App() {
 
     return uniqueValues([draft.childLabel, ...candidates.map((item) => item.childLabel)])
   }, [activeItems, draft.area, draft.location, draft.parentLabel, draft.childLabel])
+
+  const quickMoveAreaOptions = useMemo(
+    () => uniqueValues([quickMoveDraft.area, ...activeItems.map((item) => item.area)]),
+    [activeItems, quickMoveDraft.area],
+  )
+
+  const quickMoveLocationOptions = useMemo(() => {
+    const candidates =
+      quickMoveDraft.area === ''
+        ? activeItems
+        : activeItems.filter((item) => item.area === quickMoveDraft.area)
+
+    return uniqueValues([quickMoveDraft.location, ...candidates.map((item) => item.location)])
+  }, [activeItems, quickMoveDraft.area, quickMoveDraft.location])
+
+  const quickMoveParentOptions = useMemo(() => {
+    const candidates = activeItems.filter((item) => {
+      if (quickMoveDraft.area && item.area !== quickMoveDraft.area) {
+        return false
+      }
+
+      if (quickMoveDraft.location && item.location !== quickMoveDraft.location) {
+        return false
+      }
+
+      return true
+    })
+
+    return uniqueValues([quickMoveDraft.parentLabel, ...candidates.map((item) => item.parentLabel)])
+  }, [activeItems, quickMoveDraft.area, quickMoveDraft.location, quickMoveDraft.parentLabel])
+
+  const quickMoveChildOptions = useMemo(() => {
+    const candidates = activeItems.filter((item) => {
+      if (quickMoveDraft.area && item.area !== quickMoveDraft.area) {
+        return false
+      }
+
+      if (quickMoveDraft.location && item.location !== quickMoveDraft.location) {
+        return false
+      }
+
+      if (quickMoveDraft.parentLabel && item.parentLabel !== quickMoveDraft.parentLabel) {
+        return false
+      }
+
+      return true
+    })
+
+    return uniqueValues([quickMoveDraft.childLabel, ...candidates.map((item) => item.childLabel)])
+  }, [activeItems, quickMoveDraft.area, quickMoveDraft.location, quickMoveDraft.parentLabel, quickMoveDraft.childLabel])
 
   const loadItems = useCallback(
     async (showLoader: boolean) => {
@@ -544,6 +633,45 @@ function App() {
       })
     }
 
+  const handleQuickMovePlacementChange =
+    (field: keyof PlacementDraft) =>
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const value = event.target.value
+
+      setQuickMoveDraft((current) => {
+        if (field === 'area') {
+          return {
+            area: value,
+            location: '',
+            parentLabel: '',
+            childLabel: '',
+          }
+        }
+
+        if (field === 'location') {
+          return {
+            ...current,
+            location: value,
+            parentLabel: '',
+            childLabel: '',
+          }
+        }
+
+        if (field === 'parentLabel') {
+          return {
+            ...current,
+            parentLabel: value,
+            childLabel: '',
+          }
+        }
+
+        return {
+          ...current,
+          childLabel: value,
+        }
+      })
+    }
+
   const handleLogin = async (event: { preventDefault: () => void }) => {
     event.preventDefault()
     setAuthError('')
@@ -571,18 +699,24 @@ function App() {
     window.localStorage.removeItem(tokenStorageKey)
     setEditorMode(null)
     setDraft(emptyDraft())
+    setQuickMoveItemId(null)
+    setQuickMoveDraft(emptyPlacementDraft())
     setStatusMessage('已登出編輯模式。')
   }
 
   const startCreate = (status: ItemStatus) => {
     setEditorMode('create')
     setDraft(emptyDraft(status))
+    setQuickMoveItemId(null)
+    setQuickMoveDraft(emptyPlacementDraft())
     setStatusMessage('')
   }
 
   const startEdit = (item: EnrichedItem) => {
     setEditorMode('edit')
     setDraft(toDraft(item))
+    setQuickMoveItemId(null)
+    setQuickMoveDraft(emptyPlacementDraft())
     setStatusMessage('')
   }
 
@@ -591,7 +725,32 @@ function App() {
     setDraft(emptyDraft())
   }
 
-  const saveDraft = async (statusOverride?: ItemStatus) => {
+  const cancelQuickMove = () => {
+    setQuickMoveItemId(null)
+    setQuickMoveDraft(emptyPlacementDraft())
+  }
+
+  const startQuickMove = (item: EnrichedItem) => {
+    if (quickMoveItemId === item.id) {
+      cancelQuickMove()
+      return
+    }
+
+    setEditorMode(null)
+    setDraft(emptyDraft())
+    setQuickMoveItemId(item.id)
+    setQuickMoveDraft(toPlacementDraft(item))
+    setStatusMessage('')
+  }
+
+  const persistItem = async (
+    input: Partial<InventoryItem>,
+    options: {
+      successMessage: string
+      refreshPlacementTags?: boolean
+      onSuccess?: () => void
+    },
+  ) => {
     if (!authToken) {
       setAuthError('請先登入後再編輯。')
       return
@@ -605,9 +764,54 @@ function App() {
         throw new Error('尚未連接 Supabase，請先完成雲端設定。')
       }
 
-      const existingItem = draft.id ? items.find((item) => item.id === draft.id) : undefined
-      const payload = {
-        id: existingItem?.id ?? draft.id,
+      const existingItem = input.id ? items.find((item) => item.id === input.id) : undefined
+      const basePayload = {
+        id: existingItem?.id ?? input.id,
+        name: input.name ?? existingItem?.name,
+        area: input.area ?? existingItem?.area,
+        location: input.location ?? existingItem?.location,
+        parentLabel: input.parentLabel ?? existingItem?.parentLabel,
+        childLabel: input.childLabel ?? existingItem?.childLabel,
+        reason: input.reason ?? existingItem?.reason,
+        aliases: input.aliases ?? existingItem?.aliases ?? [],
+        tags: input.tags ?? existingItem?.tags ?? [],
+        status: input.status ?? existingItem?.status ?? 'active',
+        stagingNote: input.stagingNote ?? existingItem?.stagingNote,
+        llmSuggestion: input.llmSuggestion ?? existingItem?.llmSuggestion,
+        createdAt: existingItem?.createdAt ?? input.createdAt,
+      }
+
+      const normalizedItem = normalizeInventoryItem(basePayload)
+      const itemForSave = options.refreshPlacementTags
+        ? {
+            ...normalizedItem,
+            tags: mergePlacementTags(existingItem, normalizedItem),
+          }
+        : normalizedItem
+      const row = toStorageItemRow(itemForSave)
+
+      const { error } = existingItem
+        ? await supabase.from('storage_items').upsert(row, { onConflict: 'id' })
+        : await supabase.from('storage_items').insert(row)
+
+      if (error) {
+        throw error
+      }
+
+      await loadItems(false)
+      options.onSuccess?.()
+      setStatusMessage(options.successMessage)
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : '儲存失敗。')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const saveDraft = async (statusOverride?: ItemStatus) => {
+    await persistItem(
+      {
+        id: draft.id,
         name: draft.name,
         area: draft.area,
         location: draft.location,
@@ -619,28 +823,15 @@ function App() {
         status: statusOverride ?? draft.status,
         stagingNote: draft.stagingNote,
         llmSuggestion: draft.llmSuggestion,
-        createdAt: existingItem?.createdAt,
-      }
-      const row = toStorageItemRow(normalizeInventoryItem(payload))
-
-      const { error } =
-        editorMode === 'edit' && draft.id
-          ? await supabase.from('storage_items').upsert(row, { onConflict: 'id' })
-          : await supabase.from('storage_items').insert(row)
-
-      if (error) {
-        throw error
-      }
-
-      await loadItems(false)
-      setEditorMode(null)
-      setDraft(emptyDraft())
-      setStatusMessage((statusOverride ?? draft.status) === 'staging' ? '已儲存到暫存區。' : '已完成歸檔。')
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '儲存失敗。')
-    } finally {
-      setIsSaving(false)
-    }
+      },
+      {
+        successMessage: (statusOverride ?? draft.status) === 'staging' ? '已儲存到暫存區。' : '已完成歸檔。',
+        onSuccess: () => {
+          setEditorMode(null)
+          setDraft(emptyDraft())
+        },
+      },
+    )
   }
 
   const deleteItem = async (item: EnrichedItem) => {
@@ -714,38 +905,67 @@ function App() {
       return
     }
 
-    if (!authToken) {
-      setAuthError('請先登入後再歸檔。')
+    await persistItem(
+      {
+        id: item.id,
+        name: item.name,
+        area: item.area,
+        location: item.location,
+        parentLabel: item.parentLabel,
+        childLabel: item.childLabel,
+        reason: item.reason,
+        aliases: item.aliases,
+        tags: item.tags,
+        stagingNote: item.stagingNote,
+        llmSuggestion: item.llmSuggestion,
+        createdAt: item.createdAt,
+          status: 'active',
+      },
+      {
+        successMessage: `已將「${item.name}」從暫存區歸檔。`,
+        refreshPlacementTags: true,
+        onSuccess: () => {
+          if (quickMoveItemId === item.id) {
+            cancelQuickMove()
+          }
+        },
+      },
+    )
+  }
+
+  const saveQuickMove = async (item: EnrichedItem, nextStatus: ItemStatus) => {
+    if (nextStatus === 'active' && !hasCompletePlacement(quickMoveDraft)) {
+      setStatusMessage('要歸檔或搬移正式物品前，請先完整選擇區域、位置、大類、子類。')
       return
     }
 
-    setIsSaving(true)
-
-    try {
-      if (!supabase) {
-        throw new Error('尚未連接 Supabase，請先完成雲端設定。')
-      }
-
-      const row = toStorageItemRow(
-        normalizeInventoryItem({
-          ...item,
-          status: 'active',
-        }),
-      )
-
-      const { error } = await supabase.from('storage_items').upsert(row, { onConflict: 'id' })
-
-      if (error) {
-        throw error
-      }
-
-      await loadItems(false)
-      setStatusMessage(`已將「${item.name}」從暫存區歸檔。`)
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '歸檔失敗。')
-    } finally {
-      setIsSaving(false)
-    }
+    await persistItem(
+      {
+        id: item.id,
+        name: item.name,
+        area: quickMoveDraft.area,
+        location: quickMoveDraft.location,
+        parentLabel: quickMoveDraft.parentLabel,
+        childLabel: quickMoveDraft.childLabel,
+        reason: item.reason,
+        aliases: item.aliases,
+        tags: item.tags,
+        status: nextStatus,
+        stagingNote: item.stagingNote,
+        llmSuggestion: item.llmSuggestion,
+        createdAt: item.createdAt,
+      },
+      {
+        successMessage:
+          nextStatus === 'active' && item.status === 'staging'
+            ? `已定位並歸檔「${item.name}」。`
+            : item.status === 'staging'
+              ? `已更新「${item.name}」的候選位置。`
+              : `已搬移「${item.name}」到新位置。`,
+        refreshPlacementTags: true,
+        onSuccess: cancelQuickMove,
+      },
+    )
   }
 
   const hasEditor = editorMode !== null
@@ -1124,6 +1344,9 @@ function App() {
                         </button>
                         {isLoggedIn ? (
                           <>
+                            <button type="button" className="ghost-inline" onClick={() => startQuickMove(item)}>
+                              {quickMoveItemId === item.id ? '收起移動' : '快速移動'}
+                            </button>
                             <button type="button" className="ghost-inline" onClick={() => startEdit(item)}>
                               編輯
                             </button>
@@ -1193,6 +1416,75 @@ function App() {
                         只看此子類
                       </button>
                     </div>
+
+                    {isLoggedIn && quickMoveItemId === item.id ? (
+                      <div className="quick-move-panel">
+                        <div className="quick-move-heading">
+                          <strong>快速移動</strong>
+                          <span>只改位置層級，不進完整編輯器。</span>
+                        </div>
+                        <div className="quick-move-grid">
+                          <label>
+                            <span>區域</span>
+                            <select value={quickMoveDraft.area} onChange={handleQuickMovePlacementChange('area')}>
+                              <option value="">請選擇區域</option>
+                              {quickMoveAreaOptions.map((area) => (
+                                <option key={area} value={area}>
+                                  {area}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>位置</span>
+                            <select value={quickMoveDraft.location} onChange={handleQuickMovePlacementChange('location')}>
+                              <option value="">請選擇位置</option>
+                              {quickMoveLocationOptions.map((location) => (
+                                <option key={location} value={location}>
+                                  {location}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>大類</span>
+                            <select
+                              value={quickMoveDraft.parentLabel}
+                              onChange={handleQuickMovePlacementChange('parentLabel')}
+                            >
+                              <option value="">請選擇大類</option>
+                              {quickMoveParentOptions.map((parentLabel) => (
+                                <option key={parentLabel} value={parentLabel}>
+                                  {parentLabel}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>子類</span>
+                            <select
+                              value={quickMoveDraft.childLabel}
+                              onChange={handleQuickMovePlacementChange('childLabel')}
+                            >
+                              <option value="">請選擇子類</option>
+                              {quickMoveChildOptions.map((childLabel) => (
+                                <option key={childLabel} value={childLabel}>
+                                  {childLabel}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <div className="quick-move-actions">
+                          <button type="button" onClick={() => void saveQuickMove(item, 'active')} disabled={isSaving}>
+                            {isSaving ? '儲存中...' : '儲存搬移'}
+                          </button>
+                          <button type="button" className="ghost-inline" onClick={cancelQuickMove} disabled={isSaving}>
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </article>
                 ))}
               </div>
@@ -1225,6 +1517,9 @@ function App() {
                         </button>
                         {isLoggedIn ? (
                           <>
+                            <button type="button" className="ghost-inline" onClick={() => startQuickMove(item)}>
+                              {quickMoveItemId === item.id ? '收起定位' : '快速定位'}
+                            </button>
                             <button type="button" className="ghost-inline" onClick={() => startEdit(item)}>
                               編輯暫存
                             </button>
@@ -1257,6 +1552,78 @@ function App() {
                       <strong>背景備註：</strong>
                       {item.reason || '尚未填寫'}
                     </p>
+
+                    {isLoggedIn && quickMoveItemId === item.id ? (
+                      <div className="quick-move-panel">
+                        <div className="quick-move-heading">
+                          <strong>快速定位</strong>
+                          <span>先存候選位置，或直接定位後歸檔。</span>
+                        </div>
+                        <div className="quick-move-grid">
+                          <label>
+                            <span>區域</span>
+                            <select value={quickMoveDraft.area} onChange={handleQuickMovePlacementChange('area')}>
+                              <option value="">尚未決定</option>
+                              {quickMoveAreaOptions.map((area) => (
+                                <option key={area} value={area}>
+                                  {area}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>位置</span>
+                            <select value={quickMoveDraft.location} onChange={handleQuickMovePlacementChange('location')}>
+                              <option value="">尚未決定</option>
+                              {quickMoveLocationOptions.map((location) => (
+                                <option key={location} value={location}>
+                                  {location}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>大類</span>
+                            <select
+                              value={quickMoveDraft.parentLabel}
+                              onChange={handleQuickMovePlacementChange('parentLabel')}
+                            >
+                              <option value="">尚未決定</option>
+                              {quickMoveParentOptions.map((parentLabel) => (
+                                <option key={parentLabel} value={parentLabel}>
+                                  {parentLabel}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>子類</span>
+                            <select
+                              value={quickMoveDraft.childLabel}
+                              onChange={handleQuickMovePlacementChange('childLabel')}
+                            >
+                              <option value="">尚未決定</option>
+                              {quickMoveChildOptions.map((childLabel) => (
+                                <option key={childLabel} value={childLabel}>
+                                  {childLabel}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <div className="quick-move-actions">
+                          <button type="button" onClick={() => void saveQuickMove(item, 'staging')} disabled={isSaving}>
+                            {isSaving ? '儲存中...' : '儲存候選'}
+                          </button>
+                          <button type="button" onClick={() => void saveQuickMove(item, 'active')} disabled={isSaving}>
+                            {isSaving ? '儲存中...' : '定位後歸檔'}
+                          </button>
+                          <button type="button" className="ghost-inline" onClick={cancelQuickMove} disabled={isSaving}>
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </article>
                 ))}
               </div>
